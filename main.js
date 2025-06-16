@@ -1,6 +1,12 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
+const cron = require('node-cron');
+const { group } = require('console');
+
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 3000;
 
 // Constantes
 const BIRTHDAYS_FILE = 'birthdays.json';
@@ -24,6 +30,26 @@ function saveBirthdays() {
     console.log('Aniversários salvos no arquivo.');
 }
 
+function isRealDate(day, month) {
+    if (day < 1 || month < 1 || month > 12) {
+        return false;
+    }
+
+    const daysInMonth = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+    if (month === 2 && day > 29) {
+        return false;
+    }
+
+    if (day > daysInMonth[month - 1]) {
+        return false;
+    }
+
+    const testDate = new Date(2000, month - 1, day);
+
+    return testDate.getMonth() === (month - 1) && testDate.getDate() === day;
+}
+
 function getNextBdayDate(day, month) {
     const today = new Date();
     const currentYear = today.getFullYear();
@@ -34,6 +60,44 @@ function getNextBdayDate(day, month) {
         bdayThisYear = new Date(currentYear + 1, month - 1, day);
     }
     return bdayThisYear
+}
+
+function sendHappyBirthday(client) {
+    const today = new Date();
+    const currentDay = today.getDate();
+    const currentMonth = today.getMonth() + 1;
+
+    console.log(`Verificando aniversários hoje: ${currentDay}/${currentMonth}`);
+
+    let happyBdaySent = false;
+    for (const name in birthdays) {
+        const dateParts = birthdays[name].split('/');
+        const bdayDay = parseInt(dateParts[0], 10);
+        const bdayMonth = parseInt(dateParts[1], 10);
+
+        if (bdayDay === currentDay && bdayMonth === currentMonth) {
+            const displayName = name.split(' ')
+                                .map(word => {
+                                    if (word && word.length > 0) {
+                                        return word.charAt(0).toUpperCase() + word.slice(1);
+                                    }
+                                    return '';
+                                })
+                                .filter(Boolean)
+                                .join(' ');
+            const happyBdayMessage = `🚨 ATENÇÃO XIOLERS 🚨\nHoje é aniversário de ${displayName}! Que seu dia seja incrível, cheio de alegria e de muito jambu!! 🥳🎂`;
+            
+            const GROUP_ID_TO_SEND_MESSAGE = '120363158758153954@g.us';
+
+            client.sendMessage(GROUP_ID_TO_SEND_MESSAGE, happyBdayMessage)
+                .then(() => console.log(`Parabéns enviados para ${displayName} no ${GROUP_ID_TO_SEND_MESSAGE}`))
+                .catch(err => console.error(`Erro ao enviar parabéns para ${displayName}:`, err));
+            happyBdaySent = true;
+        }
+    }
+    if (!happyBdaySent) {
+        console.log(`Nenhum aniversário hoje, ${currentDay}/${currentMonth}`);
+    }
 }
 
 // Create a new client instance
@@ -49,6 +113,18 @@ const client = new Client({
 client.once('ready', () => {
     console.log('Client is ready!');
     loadBirthdays();
+
+    const GROUP_ID_FOR_BIRTHDAYS = '120363158758153954@g.us';
+
+    cron.schedule('5 8 * * *', () => {
+        console.log(`Checando aniversários...`);
+        sendHappyBirthday(client, GROUP_ID_FOR_BIRTHDAYS);
+    }, {
+        scheduled: true,
+        timezone: "America/Belem"
+    });
+
+    console.log(`Agenda de aniversários configurada.`);
 });
 
 // When the client received QR-Code
@@ -60,6 +136,11 @@ client.on('message_create', async message => {
     const chat = await message.getChat();
 
     if(chat.isGroup) {
+        if (message.body === '!misterio') {
+            const groupId = chat.id._serialized;
+            message.reply(`🤫`);
+            console.log(`ID do grupo "${chat.name}" (${chat.id._serialized}) solicitado.`);
+        }
         // Comando !add [Nome] [DD/MM]
         if (message.body.startsWith('!add')) {
             const parts = message.body.split(' ');
@@ -68,11 +149,19 @@ client.on('message_create', async message => {
                 const name = parts.slice(1, -1).join(' ');
 
                 if (/^\d{2}\/\d{2}$/.test(date)) {
-                    const normalizedName = name.toLowerCase();
-                    birthdays[normalizedName] = date;
-                    saveBirthdays();
-                    message.reply(`Agora sei o aniversário de ${name}! ✨`);
-                    console.log(`Aniversário de ${name} adicionado.`);
+                    const [dayStr, monthStr] = date.split('/');
+                    const day = parseInt(dayStr, 10);
+                    const month = parseInt(monthStr, 10);
+
+                    if (isRealDate(day, month)) {
+                        const normalizedName = name.toLowerCase();
+                        birthdays[normalizedName] = date;
+                        saveBirthdays();
+                        message.reply(`Agora sei o aniversário de ${name}! ✨`);
+                        console.log(`Aniversário de ${name} adicionado.`);
+                    } else {
+                        message.reply(`Sacana... 🤔 Só aceito dias e meses que existem!`)
+                    }
                 } else {
                     message.reply(`Erro de formatação! ❌ Use: !add Nome DD/MM`);
                 }
@@ -120,8 +209,9 @@ client.on('message_create', async message => {
                     delete birthdays[normalizedNameToRemove];
                     saveBirthdays();
                     message.reply(`Esqueci quando ${nameToRemove} nasceu... 🪦`);
+                    console.log(`Aniversário de ${nameToRemove} removido.`)
                 } else {
-                    message.reply(`Eu nem sabia o aniversário de ${nameToRemove}! 👁️👄👁️`);
+                    message.reply(`Eu nem sabia que ${nameToRemove} tinha nascido! 👁️👄👁️`);
                 }
             } else {
                 message.reply(`Use: !remove Nome (Tem que ser o nome completo da pessoa, ok? 👍🏽)`);
@@ -183,3 +273,12 @@ client.on('message_create', async message => {
 });
 
 client.initialize();
+
+// Servidor express para manter o replit ativo
+app.get('/', (req, res) => {
+    res.send('DataJambu está online!');
+});
+
+app.listen(PORT, () => {
+    console.log(`Servidor web rodando na porta ${PORT}`);
+});
