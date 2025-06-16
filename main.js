@@ -2,7 +2,7 @@ const { Client, RemoteAuth } = require('whatsapp-web.js'); // Usar RemoteAuth pa
 const qrcode = require('qrcode-terminal');
 const cron = require('node-cron');
 const mongoose = require('mongoose');
-const { MongoStore } = require('whatsapp-web.js-mongodb'); // Pacote correto para store MongoDB
+const { MongoStore } = require('wwebjs-mongo'); // Pacote correto para store MongoDB
 
 // Conexão com MongoDB
 mongoose.connect(process.env.MONGO_URI, {
