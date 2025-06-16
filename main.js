@@ -1,5 +1,5 @@
 const { Client } = require('whatsapp-web.js');
-const { MongoStore } = require('whatsapp-web.js-mongo');
+const { MongoStore } = require('wwebjs-mongo');
 const mongoose = require('mongoose');
 const qrcode = require('qrcode-terminal');
 const cron = require('node-cron');
