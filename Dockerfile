@@ -1,10 +1,11 @@
+# Use uma imagem Node.js completa (não-slim).
 FROM node:22
 
+# Define o diretório de trabalho dentro do container
 WORKDIR /usr/src/app
 
+# Instala as dependências do sistema operacional necessárias para o Puppeteer (AGORA SEM 'chromium' AQUI)
 RUN apt-get update && apt-get install -y \
-    chromium \
-    # Bibliotecas essenciais para o Chromium headless e resolução do erro libgobject
     libnss3 \
     libxss1 \
     libasound2 \
@@ -38,17 +39,21 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     libxtst6 \
     xdg-utils \
-    # Fontes e outras ferramentas úteis para o ambiente
     fonts-noto-color-emoji \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
+# Copia os arquivos package.json e package-lock.json primeiro para alavancar o cache do Docker
 COPY package*.json ./
 
-RUN npm install --production
+# Instala as dependências do Node.js (agora incluindo o Puppeteer, que baixará o Chromium)
+RUN npm install
 
+# Copia o restante do código da sua aplicação para o diretório de trabalho
 COPY . .
 
+# Expõe a porta que seu servidor Express vai escutar (seu main.js escuta na porta 3000)
 EXPOSE 3000
 
+# Comando para iniciar sua aplicação
 CMD ["node", "main.js"]
