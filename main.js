@@ -1,301 +1,307 @@
-const { Client } = require('whatsapp-web.js');
-const { MongoStore } = require('wwebjs-mongo');
-const mongoose = require('mongoose');
+const { Client, RemoteAuth } = require('whatsapp-web.js'); // Usar RemoteAuth para persistência no MongoDB
 const qrcode = require('qrcode-terminal');
 const cron = require('node-cron');
+const mongoose = require('mongoose');
+const { MongoStore } = require('whatsapp-web.js-mongodb'); // Pacote correto para store MongoDB
 
-// Variáveis de ambiente
-const MONGO_URI = process.env.MONGO_URI;
-if (!MONGO_URI) {
-    console.error("Erro! Variável de ambiente MONGO_URI não definida.");
-    process.exit(1);
-}
+// Conexão com MongoDB
+mongoose.connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+}).then(() => {
+    console.log('Conexão com MongoDB estabelecida com sucesso!');
 
-const birthdaySchema = new mongoose.Schema({
-    name: String,
-    day: Number,
-    month: Number,
-    groupChatID: String
-});
-const Birthday = mongoose.model('Birthday', birthdaySchema);
+    // ----- Definição do Modelo de Aniversário (Birthday Model) -----
+    const birthdaySchema = new mongoose.Schema({
+        name: { type: String, required: true, trim: true },
+        day: { type: Number, required: true, min: 1, max: 31 },
+        month: { type: Number, required: true, min: 1, max: 12 },
+        groupId: { type: String, required: true } // Para armazenar de qual grupo é o aniversário
+    });
 
-// Conexão com o MongoDB
-let client;
-let db;
+    // Adiciona um índice composto para garantir unicidade por nome e grupo
+    birthdaySchema.index({ name: 1, groupId: 1 }, { unique: true });
 
-mongoose.connect(MONGO_URI)
-    .then(connection => {
-        db = connection.connection.db;
-        console.log("Conexão com MongoDB estabelecida com sucesso!");
+    const Birthday = mongoose.model('Birthday', birthdaySchema);
 
-        const store = new MongoStore({ mongoose: mongoose });
+    // ----- Inicialização do Cliente WhatsApp com MongoStore -----
+    const store = new MongoStore({ mongoose: mongoose });
 
-        client = new Client({
-            authStrategy: new MongoStore({ mongoose: mongoose }),
-            puppeteer: {
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--single-process',
-                    '--disable-gpu'
-                ] 
-            }
-        });
-
-        client.on('qr', qr => {
-            console.log('QR recebido', qr);
-            qrcode.generate(qr, {small:true});
-        });
-        
-        client.on('ready', () => {
-            console.log('Cliente pronto!');
-            shceduleBirthdayChecks();
-        });
-
-        client.on('message', async message => {
-            console.log(`Mensagem recebida de ${message.from}: ${message.body}`);
-            const chat = await message.getChat();
-            
-            if (message.body === '!misterio') {
-                const groupId = chat.id._serialized;
-                message.reply(`🤫`);
-                console.log(`ID do grupo "${chat.name}" (${chat.id._serialized}) solicitado.`);
+    const client = new Client({
+        authStrategy: new RemoteAuth({
+            clientId: 'datajambu-bot', // ID único para a sessão, importante para multi-device
+            store: store
+        }),
+        puppeteer: {
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process', // Importante para ambientes com recursos limitados como o Render free tier
+                '--disable-gpu'
+            ],
+            headless: true
         }
-            
-            // Comando !add [Nome] [DD/MM]
-            if (message.body.startsWith('!add')) {
-                const parts = message.body.split(' ');
-                if (parts.length < 4) {
-                    message.reply('❌ Erro de formatação! Use DD/MM');
-                    return;
-                }
-                const name = parts.slice(1, parts.length - 1).join(' ');
-                const datePart = parts[parts.length - 1];
-                const [day, month] = datePart.split('/').map(Number);
+    });
 
-                if (!name || !day || !month || !isRealDate(day, month)) {
-                    message.reply('Sacana... 🤔 Só aceito dias e meses que existem!');
-                    return;
-                }
+    // ----- Eventos do Cliente WhatsApp -----
+    client.on('qr', qr => {
+        console.log('QR RECEIVED', qr);
+        qrcode.generate(qr, { small: true });
+    });
 
-                try {
-                    const existingBirthday = await Birthday.findOne({ name: { $regex: new RegExp(`^${name}$`, 'i') }, groupChatID: chat.id });
-                    if (existingBirthday) {
-                        message.reply('Aaaah, eu já sabia o aniversário de ${name}');
-                        reutrn;
-                    }
+    client.on('ready', () => {
+        console.log('Cliente WhatsApp está pronto!');
+        console.log('Bot de Aniversários está online!');
+    });
 
-                    const newBirthday = new Birthday({ name, day, month, groupChatID: chat.id });
-                    await newBirthday.save();
-                    message.reply(`Agora sei o aniversário de ${name}! ✨`)
-                } catch (error) {
+    client.on('message', async message => {
+        const chat = await message.getChat();
+        const groupId = chat.isGroup ? chat.id._serialized : null; // Pega o ID do grupo
+
+        // Ignora mensagens que não sejam de grupo ou que não comecem com '!'
+        if (!chat.isGroup && message.body[0] !== '!') {
+            // Se não for grupo e não for um comando, pode ignorar ou responder algo genérico
+            return;
+        }
+
+        const args = message.body.split(' ');
+        const command = args[0].toLowerCase();
+
+        // Comando !add
+        if (command === '!add') {
+            if (!groupId) {
+                message.reply('Este comando só pode ser usado em grupos.');
+                return;
+            }
+            if (args.length < 4) {
+                message.reply('Formato incorreto. Use: `!add [Nome Completo] [DD/MM]`');
+                return;
+            }
+
+            const datePart = args[args.length - 1]; // Última parte é a data
+            const name = args.slice(1, args.length - 1).join(' '); // O resto é o nome
+
+            const dateParts = datePart.split('/');
+            const day = parseInt(dateParts[0]);
+            const month = parseInt(dateParts[1]);
+
+            if (isNaN(day) || isNaN(month) || !isRealDate(day, month)) {
+                message.reply('Data inválida. Use o formato DD/MM.');
+                return;
+            }
+
+            try {
+                const newBirthday = new Birthday({
+                    name: name.toLowerCase(), // Armazena em minúsculas para facilitar a busca
+                    day,
+                    month,
+                    groupId
+                });
+                await newBirthday.save();
+                message.reply(`🎉 Aniversário de *${capitalizeName(name)}* em ${day}/${month} adicionado com sucesso!`);
+            } catch (error) {
+                if (error.code === 11000) { // Erro de chave duplicada (nome e grupo)
+                    message.reply(`*${capitalizeName(name)}* já tem um aniversário registrado neste grupo.`);
+                } else {
                     console.error('Erro ao adicionar aniversário:', error);
-                    message.reply('❌ Erro de formatação! Use: !add Nome DD/MM');
-                }
-
-            // Comando !remove [Nome]
-            if (message.body.startsWith('!remove')) {
-                const nameToRemove = message.body.substring(8).trim();
-                if (!nameToRemove) {
-                    message.reply('❌ Erro de formatação! Use: !remove Nome');
-                    return;
-                }
-                // Checa se a pessoa está tentando remover uma data ao invés de um nome
-                if (/^\d{2}\/\d{2}$/.test(nameToRemove)) {
-                    message.reply(`Use: !remove Nome (Tem que ser o nome completo da pessoa, ok? 👍🏽)`);
-                    return;
-                }
-
-                try {
-                    const result = await Birthday.deleteOne({ name: { $regex: new RegExp(`^${nameToRemove}$`, 'i') }, groupChatID: chat.id });
-                    if (result.deletedCount > 0) {
-                        message.reply(`Esqueci quando ${nameToRemove} nasceu... 🪦`);
-                        console.log(`Aniversário de ${nameToRemove} removido.`)
-                    } else {
-                        message.reply(`Eu nem sabia que ${nameToRemove} tinha nascido! 👁️👄👁️`);
-                    }
-                } catch (error) {
-                    console.error('Erro ao remover aniversário:', error);
-                    message.reply(`Use: !remove Nome (Tem que ser o nome completo da pessoa, ok? 👍🏽)`);
+                    message.reply('Ocorreu um erro ao adicionar o aniversário. Tente novamente mais tarde.');
                 }
             }
-                
-            // Comando !listar
-            if (message.body === '!listar') {
-                try {
-                    const allBirthdays = await Birthday.find({ groupChatID: chat.id });
-                    if (allBirthdays.length === 0) {
-                        message.reply('Ainda não sei nenhum aniversário :(');
-                        return;
-                    }
+        }
 
-                    let birthdayList = '🦜 Aniversários dos Xiolers: 🦜\n';
+        // Comando !remove
+        if (command === '!remove') {
+            if (!groupId) {
+                message.reply('Este comando só pode ser usado em grupos.');
+                return;
+            }
+            if (args.length < 2) {
+                message.reply('Formato incorreto. Use: `!remove [Nome Completo]`');
+                return;
+            }
+
+            const nameToRemove = args.slice(1).join(' ').toLowerCase();
+
+            try {
+                const result = await Birthday.deleteOne({ name: nameToRemove, groupId });
+                if (result.deletedCount > 0) {
+                    message.reply(`❌ Aniversário de *${capitalizeName(nameToRemove)}* removido com sucesso.`);
+                } else {
+                    message.reply(`Não encontrei o aniversário de *${capitalizeName(nameToRemove)}* neste grupo.`);
+                }
+            } catch (error) {
+                console.error('Erro ao remover aniversário:', error);
+                message.reply('Ocorreu um erro ao remover o aniversário. Tente novamente mais tarde.');
+            }
+        }
+
+        // Comando !listar
+        if (command === '!listar') {
+            if (!groupId) {
+                message.reply('Este comando só pode ser usado em grupos.');
+                return;
+            }
+            try {
+                const allBirthdays = await Birthday.find({ groupId }).sort({ month: 1, day: 1 });
+                let replyMessage = '📋 *Lista de Aniversários:*\n\n';
+                if (allBirthdays.length > 0) {
                     allBirthdays.forEach(bday => {
-                        const displayName = bday.name.split(' ').map(word => word.charAt(0).toUpperCase + word.slice(1)).join(' ');
-                        birthdayList += `${displayName} - ${bday.day.toString().padStart(2, '0')}/${bday.month.toString().padStart(2, '0')}\n`;
+                        const displayName = capitalizeName(bday.name);
+                        replyMessage += `${displayName}: ${bday.day.toString().padStart(2, '0')}/${bday.month.toString().padStart(2, '0')}\n`;
                     });
-                    message.reply(birthdayList);
-                } catch (error) {
-                    console.error('Erro ao listar aniversários:', error);
-                    message.reply('Ocorreu um erro ao listar os aniversários. Tenta de novo.');
+                } else {
+                    replyMessage += 'Nenhum aniversário registrado neste grupo ainda.';
                 }
+                message.reply(replyMessage);
+            } catch (error) {
+                console.error('Erro ao listar aniversários:', error);
+                message.reply('Ocorreu um erro ao listar os aniversários. Tente novamente mais tarde.');
             }
-                
-            // Comando !proximos
-            if (message.body === '!proximos') {
-                try {
-                    const allBirthdays = await Birthday.find({ groupChatId: chat.id });
-                    const today = new Date();
-                    const currentYear = today.getFullYear();
-                    let upcomingBirthdays = [];
+        }
 
-                    allBirthdays.forEach(bday => {
-                        let bdayDate = new Date(CurrentYear, bday.month - 1, bday.day);
-                        if (bdayDate < today) {
-                            bdayDate.setFullYear(currentYear + 1);
-                        }
-                        const diffTime = bdayDate.getTime() - today.getTime();
-                        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        // Comando !proximos
+        if (command === '!proximos') {
+            if (!groupId) {
+                message.reply('Este comando só pode ser usado em grupos.');
+                return;
+            }
+            try {
+                const allBirthdays = await Birthday.find({ groupId });
+                const today = new Date();
+                const currentMonth = today.getMonth() + 1; // Mês atual (1-12)
+                const currentDay = today.getDate(); // Dia atual
 
-                        const displayDate = `${bday.day.toString().padStart(2, '0')}/${bday.month.toString().padStart(2, '0')}`;
+                const upcomingBirthdays = [];
 
-                        upcomingBirthdays.push({
-                            name: bday.name,
-                            date: bday.date,
-                            daysUntil: diffDays,
-                            displayDate: displayDate
-                        });
-                    });
-
-                    // Organiza os próximos aniversários
-                    upcomingBirthdays.sort((a, b) => a.date.getTime() - b.date.getTime());
-
-                    let replyMessage = '🎉 Próximos aniversários: 🎈\n';
-                    if (upcomingBirthdays.length > 0) {
-                        const birthdaysToShow = upcomingBirthdays.slice(0, 3); // Mostra os 3 próximos
-
-                        birthdaysToShow.forEach(bday => {
-                            const displayName = bday.name.split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
-                            replyMessage += `${displayName} - ${bday.displayDate}\n`;
-                        });
-                    } else {
-                        replyMessage += `Ih, gente! Nenhum aniversário à vista neste grupo...`;
+                allBirthdays.forEach(bday => {
+                    let year = today.getFullYear();
+                    // Se o aniversário já passou este ano, considera o próximo ano
+                    if (bday.month < currentMonth || (bday.month === currentMonth && bday.day < currentDay)) {
+                        year++;
                     }
-                    message.reply(replyMessage);
-                } catch (error) {
-                    console.error('Erro ao buscar próximos aniversários:', error);
-                    message.reply('Ocorreu um erro ao buscar os próximos aniversários. Tenta de novo.');
+                    const bdayDate = new Date(year, bday.month - 1, bday.day);
+                    upcomingBirthdays.push({
+                        name: bday.name,
+                        date: bdayDate,
+                        displayDate: `${bday.day.toString().padStart(2, '0')}/${bday.month.toString().padStart(2, '0')}`
+                    });
+                });
+
+                // Ordena os próximos aniversários por data
+                upcomingBirthdays.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+                let replyMessage = '🎉 *Próximos aniversários:*\n\n';
+                if (upcomingBirthdays.length > 0) {
+                    const birthdaysToShow = upcomingBirthdays.slice(0, 3); // Mostra os 3 próximos
+
+                    birthdaysToShow.forEach(bday => {
+                        replyMessage += `*${capitalizeName(bday.name)}* - ${bday.displayDate}\n`;
+                    });
+                } else {
+                    replyMessage += `Nenhum aniversário a vista neste grupo...`;
                 }
+                message.reply(replyMessage);
+            } catch (error) {
+                console.error('Erro ao buscar próximos aniversários:', error);
+                message.reply('Ocorreu um erro ao buscar os próximos aniversários. Tente novamente mais tarde.');
             }
-                
-            // Comando !help
-            if (message.body === '!help') {
-                const helpMessage = `🤖 Oi, eu sou o DataJambu e guardo o aniversário dos membros do grupo! 🤖\n
-                Como me usar:\n
-                ✏️ *!add [Nome] [DD/MM]*\nAdiciona um aniversário na minha cabeça (ex. !add Henrique Jambu 09/06)\n
-                ❌ *!remove [Nome]*\nRemove um aniversário da minha cabeça.\n
-                📋 *!listar*\nLista todos os aniversários que eu sei.\n
-                3️⃣ *!proximos*\nMostra os 3 próximos aniversários.\n
-                ‼️ *!help*\nMostra essa mensagem de ajuda :) gostou??`.trim();
-                    message.reply(helpMessage);
-            }
+        }
+
+        // Comando !help
+        if (command === '!help') {
+            const helpMessage = `🤖 Oi, eu sou o DataJambu e guardo o aniversário dos membros do grupo! 🤖\n\n` +
+                `*Como me usar:*\n\n` +
+                `✏️ *!add [Nome Completo] [DD/MM]*\n` +
+                `Adiciona um aniversário (ex. \`!add Henrique Jambu 09/06\`)\n\n` +
+                `❌ *!remove [Nome Completo]*\n` +
+                `Remove um aniversário.\n\n` +
+                `📋 *!listar*\n` +
+                `Lista todos os aniversários que eu sei neste grupo.\n\n` +
+                `3️⃣ *!proximos*\n` +
+                `Mostra os 3 próximos aniversários neste grupo.\n\n` +
+                `Se tiver dúvidas, chame meu criador!`;
+            message.reply(helpMessage);
         }
     });
 
-      client.on('auth_failure', msg => {
-            console.error('FALHA DE AUTENTICAÇÃO', msg);
-        });
-
-        client.on('disconnected', reason => {
-            console.log('Cliente desconectado', reason);
-            // Re-inicializa o cliente se for desconectado
-            client.initialize();
-        });
-
-        // --- Inicializa o Cliente WhatsApp ---
-        client.initialize();
-
-    })
-    .catch(err => {
-        console.error('Erro ao conectar ao MongoDB:', err);
-        process.exit(1); // Encerra o processo se não conseguir conectar ao DB
+    client.on('auth_failure', msg => {
+        console.error('FALHA DE AUTENTICAÇÃO', msg);
     });
 
+    client.on('disconnected', reason => {
+        console.log('Cliente desconectado!', reason);
+    });
 
-// Funções auxiliares (não precisam de conexão DB para si mesmas)
-
-// Função para verificar se a data é real
-function isRealDate(day, month) {
-    if (day < 1 || month < 1 || month > 12) {
-        return false;
+    // ----- Funções Auxiliares -----
+    function isRealDate(day, month) {
+        if (day < 1 || month < 1 || month > 12) {
+            return false;
+        }
+        const daysInMonth = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        // Considera ano bissexto para fevereiro (apenas para validação do dia 29)
+        if (month === 2) {
+            return day <= daysInMonth[month - 1];
+        }
+        return day <= daysInMonth[month - 1];
     }
 
-    const daysInMonth = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-
-    // Para fevereiro, considera o ano bissexto para 29 dias.
-    // Como os aniversários são fixos, 29 dias em fev é o máximo possível para uma data real.
-    if (month === 2) {
-        return day <= daysInMonth[month - 1]; // daysInMonth[1] é 29
+    function capitalizeName(name) {
+        return name.split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
     }
-    return day <= daysInMonth[month - 1];
-}
 
-
-// Agendamento de aniversários (CRON)
-function scheduleBirthdayChecks() {
-    cron.schedule('10 8 * * *', async () => {
-        console.log('Verificando aniversários do dia...');
+    // ----- Agendamento para verificar e anunciar aniversários (Cron Job) -----
+    // Roda todos os dias às 9:00 (no fuso horário do servidor, que o Render configura para UTC)
+    cron.schedule('0 9 * * *', async () => {
+        console.log('Verificando aniversários...');
         const today = new Date();
-        const currentDay = today.getDate();
-        const currentMonth = today.getMonth() + 1; // Mês é 0-indexado
+        const currentMonth = today.getMonth() + 1; // Mês atual (1-12)
+        const currentDay = today.getDate(); // Dia atual
 
         try {
-            // Busca todos os aniversários no DB que correspondem ao dia e mês de hoje
-            const birthdaysToday = await Birthday.find({ day: currentDay, month: currentMonth });
+            // Encontra todos os aniversariantes de hoje em todos os grupos
+            const birthdaysToday = await Birthday.find({
+                day: currentDay,
+                month: currentMonth
+            });
 
             if (birthdaysToday.length > 0) {
-                // Para cada aniversário, tenta encontrar o grupo e enviar a mensagem
-                for (const bday of birthdaysToday) {
-                    try {
-                        const chat = await client.getChatById(bday.groupChatId);
-                        if (chat) { // Verifica se o chat ainda existe
-                            const displayName = bday.name.split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
-                            await chat.sendMessage(`🚨 ATENÇÃO XIOLERS 🚨\nHoje é aniversário de ${displayName}! Que seu dia seja incrível, cheio de alegria e de muito jambu!! 🥳🎂`);
-                            console.log(`Mensagem de aniversário enviada para ${displayName} no grupo ${chat.name || bday.groupChatId}`);
-                        } else {
-                            console.log(`Grupo ${bday.groupChatId} não encontrado para ${bday.name}.`);
-                        }
-                    } catch (chatError) {
-                        console.error(`Erro ao enviar mensagem para ${bday.name} no grupo ${bday.groupChatId}:`, chatError);
+                // Agrupa os aniversariantes por grupo para enviar uma única mensagem por grupo
+                const birthdaysByGroup = {};
+                birthdaysToday.forEach(bday => {
+                    if (!birthdaysByGroup[bday.groupId]) {
+                        birthdaysByGroup[bday.groupId] = [];
+                    }
+                    birthdaysByGroup[bday.groupId].push(bday.name);
+                });
+
+                for (const groupId in birthdaysByGroup) {
+                    const names = birthdaysByGroup[groupId].map(name => `*${capitalizeName(name)}*`).join(' e ');
+                    const chat = await client.getChatById(groupId);
+                    if (chat) {
+                        await chat.sendMessage(`🎉 Parabéns ${names}! Feliz aniversário! 🎂🥳`);
+                        console.log(`Mensagem de aniversário enviada para o grupo ${chat.name || groupId}.`);
+                    } else {
+                        console.log(`Não foi possível encontrar o chat com ID ${groupId} para enviar o aniversário.`);
                     }
                 }
             } else {
                 console.log('Nenhum aniversário hoje.');
             }
         } catch (error) {
-            console.error('Erro ao buscar aniversários para o CRON:', error);
+            console.error('Erro ao verificar aniversários agendados:', error);
         }
     }, {
-        scheduled: true,
-        timezone: "America/Belem"
+        timezone: "America/Belem" // Define o fuso horário para Belém
     });
 
-    console.log('Verificação diária de aniversários agendada.');
-}
+    // Inicia o cliente WhatsApp
+    client.initialize();
 
-// Servidor web simples para manter o bot ativo
-const express = require('express');
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.get('/', (req, res) => {
-    res.send('DataJambu está online!');
-});
-
-app.listen(PORT, () => {
-    console.log(`Servidor web rodando na porta ${PORT}`);
+}).catch(err => {
+    console.error('Erro ao conectar ao MongoDB:', err);
+    process.exit(1); // Sai do processo se a conexão com o DB falhar
 });
