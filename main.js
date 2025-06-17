@@ -30,7 +30,8 @@ mongoose.connect(process.env.MONGO_URI, {
     const client = new Client({
         authStrategy: new RemoteAuth({
             clientId: 'datajambu-bot', // ID único para a sessão, importante para multi-device
-            store: store
+            store: store,
+            backupSyncIntervalMs: 60000;
         }),
         puppeteer: {
             args: [
