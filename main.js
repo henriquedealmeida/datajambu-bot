@@ -4,6 +4,7 @@ const qrcodeLib= require('qrcode');
 const cron = require('node-cron');
 const mongoose = require('mongoose');
 const { MongoStore } = require('wwebjs-mongo'); // Pacote correto para store MongoDB
+const express = require('express');
 
 // Conexão com MongoDB
 mongoose.connect(process.env.MONGO_URI, {
@@ -81,7 +82,7 @@ mongoose.connect(process.env.MONGO_URI, {
         const args = message.body.split(' ');
         const command = args[0].toLowerCase();
 
-        // Comando !add
+        // Comando !add Nome DD/MM
         if (command === '!add') {
             if (!groupId) {
                 message.reply('Este comando só pode ser usado em grupos.');
@@ -123,7 +124,7 @@ mongoose.connect(process.env.MONGO_URI, {
             }
         }
 
-        // Comando !remove
+        // Comando !remove Nome
         if (command === '!remove') {
             if (!groupId) {
                 message.reply('Este comando só pode ser usado em grupos.');
@@ -307,6 +308,17 @@ mongoose.connect(process.env.MONGO_URI, {
     }, {
         timezone: "America/Belem" // Define o fuso horário para Belém
     });
+
+    const app = express();
+    const port = process.env.PORT || 3000;
+
+    app.get('/', (req, res) => {
+        res.status(200).send('DataJambu está online!');
+    });
+
+    app.listen(port, '0.0.0.0', () => {
+        console.log(`Servidor de health check iniciado na porta ${port}`);
+    })
 
     // Inicia o cliente WhatsApp
     client.initialize();
