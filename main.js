@@ -1,5 +1,6 @@
 const { Client, RemoteAuth } = require('whatsapp-web.js'); // Usar RemoteAuth para persistência no MongoDB
 const qrcode = require('qrcode-terminal');
+const qrcodeLib= require('qrcode');
 const cron = require('node-cron');
 const mongoose = require('mongoose');
 const { MongoStore } = require('wwebjs-mongo'); // Pacote correto para store MongoDB
@@ -50,8 +51,16 @@ mongoose.connect(process.env.MONGO_URI, {
 
     // ----- Eventos do Cliente WhatsApp -----
     client.on('qr', qr => {
-        console.log('QR RECEIVED', qr);
+        console.log('QR RECEBIDO (ASCII - pode estar esticado)', qr);
         qrcode.generate(qr, { small: true });
+
+        qrcodeLib.toDataURL(qr, (err, url) => {
+            if (err) {
+                console.error('Erro ao gerar QR code como Data URL:', err);
+                return;
+            }
+            console.log(url);
+        })
     });
 
     client.on('ready', () => {
