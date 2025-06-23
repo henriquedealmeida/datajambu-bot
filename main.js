@@ -88,7 +88,7 @@ mongoose.connect(process.env.MONGO_URI, {
                 message.reply('Este comando só pode ser usado em grupos.');
                 return;
             }
-            if (args.length < 4) {
+            if (args.length < 3) {
                 message.reply('Formato incorreto. Use: `!add [Nome Completo] [DD/MM]`');
                 return;
             }
@@ -113,7 +113,7 @@ mongoose.connect(process.env.MONGO_URI, {
                     groupId
                 });
                 await newBirthday.save();
-                message.reply(`🎉 Aniversário de *${capitalizeName(name)}* em ${day}/${month} adicionado com sucesso!`);
+                message.reply(`✨ Agora sei o aniversário de *${capitalizeName(name)}*!`);
             } catch (error) {
                 if (error.code === 11000) { // Erro de chave duplicada (nome e grupo)
                     message.reply(`*${capitalizeName(name)}* já tem um aniversário registrado neste grupo.`);
@@ -124,14 +124,14 @@ mongoose.connect(process.env.MONGO_URI, {
             }
         }
 
-        // Comando !remove Nome
+        // Comando !remove [Nome]
         if (command === '!remove') {
             if (!groupId) {
                 message.reply('Este comando só pode ser usado em grupos.');
                 return;
             }
             if (args.length < 2) {
-                message.reply('Formato incorreto. Use: `!remove [Nome Completo]`');
+                message.reply('Formato incorreto. Use: `!remove [Nome]`');
                 return;
             }
 
@@ -140,9 +140,9 @@ mongoose.connect(process.env.MONGO_URI, {
             try {
                 const result = await Birthday.deleteOne({ name: nameToRemove, groupId });
                 if (result.deletedCount > 0) {
-                    message.reply(`❌ Aniversário de *${capitalizeName(nameToRemove)}* removido com sucesso.`);
+                    message.reply(`🪦 Esqueci quando *${capitalizeName(nameToRemove)}* nasceu..`);
                 } else {
-                    message.reply(`Não encontrei o aniversário de *${capitalizeName(nameToRemove)}* neste grupo.`);
+                    message.reply(`🤖 Eu nem sabia que *${capitalizeName(nameToRemove)}* tinha nascido!`);
                 }
             } catch (error) {
                 console.error('Erro ao remover aniversário:', error);
@@ -158,11 +158,11 @@ mongoose.connect(process.env.MONGO_URI, {
             }
             try {
                 const allBirthdays = await Birthday.find({ groupId }).sort({ month: 1, day: 1 });
-                let replyMessage = '📋 *Lista de Aniversários:*\n\n';
+                let replyMessage = '🦜 *Aniversários dos Xiolers:*\n\n';
                 if (allBirthdays.length > 0) {
                     allBirthdays.forEach(bday => {
                         const displayName = capitalizeName(bday.name);
-                        replyMessage += `${displayName}: ${bday.day.toString().padStart(2, '0')}/${bday.month.toString().padStart(2, '0')}\n`;
+                        replyMessage += `${displayName} - ${bday.day.toString().padStart(2, '0')}/${bday.month.toString().padStart(2, '0')}\n`;
                     });
                 } else {
                     replyMessage += 'Nenhum aniversário registrado neste grupo ainda.';
@@ -226,15 +226,16 @@ mongoose.connect(process.env.MONGO_URI, {
         if (command === '!help') {
             const helpMessage = `🤖 Oi, eu sou o DataJambu e guardo o aniversário dos membros do grupo! 🤖\n\n` +
                 `*Como me usar:*\n\n` +
-                `✏️ *!add [Nome Completo] [DD/MM]*\n` +
+                `✏️ *!add [Nome] [DD/MM]*\n` +
                 `Adiciona um aniversário (ex. \`!add Henrique Jambu 09/06\`)\n\n` +
-                `❌ *!remove [Nome Completo]*\n` +
-                `Remove um aniversário.\n\n` +
+                `❌ *!remove [Nome]*\n` +
+                `Remove um aniversário da minha cabeça.\n\n` +
                 `📋 *!listar*\n` +
                 `Lista todos os aniversários que eu sei neste grupo.\n\n` +
                 `3️⃣ *!proximos*\n` +
                 `Mostra os 3 próximos aniversários neste grupo.\n\n` +
-                `Se tiver dúvidas, chame meu criador!`;
+                `🆘 *!help*\n` +
+                `Mostra essa mensagem de ajuda. Gostou? :)`;
             message.reply(helpMessage);
         }
     });
@@ -293,7 +294,7 @@ mongoose.connect(process.env.MONGO_URI, {
                     const names = birthdaysByGroup[groupId].map(name => `*${capitalizeName(name)}*`).join(' e ');
                     const chat = await client.getChatById(groupId);
                     if (chat) {
-                        await chat.sendMessage(`🎉 Parabéns ${names}! Feliz aniversário! 🎂🥳`);
+                        await chat.sendMessage(`🚨 Atenção xiolas! Hoje é aniversário de ${names}! Feliz aniversário! Que o dia de hoje seja cheio de felicidade e de muito jambu! 🎂🥳`);
                         console.log(`Mensagem de aniversário enviada para o grupo ${chat.name || groupId}.`);
                     } else {
                         console.log(`Não foi possível encontrar o chat com ID ${groupId} para enviar o aniversário.`);
