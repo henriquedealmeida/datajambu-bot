@@ -1,37 +1,33 @@
-const { Client, RemoteAuth } = require('whatsapp-web.js'); // Usar RemoteAuth para persistência no MongoDB
+const { Client, RemoteAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const qrcodeLib= require('qrcode');
 const cron = require('node-cron');
 const mongoose = require('mongoose');
-const { MongoStore } = require('wwebjs-mongo'); // Pacote correto para store MongoDB
+const { MongoStore } = require('wwebjs-mongo');
 const express = require('express');
 
-// Conexão com MongoDB
 mongoose.connect(process.env.MONGO_URI, {
     useNewUrlParser: true,
     useUnifiedTopology: true
 }).then(() => {
     console.log('Conexão com MongoDB estabelecida com sucesso!');
 
-    // ----- Definição do Modelo de Aniversário (Birthday Model) -----
     const birthdaySchema = new mongoose.Schema({
         name: { type: String, required: true, trim: true },
         day: { type: Number, required: true, min: 1, max: 31 },
         month: { type: Number, required: true, min: 1, max: 12 },
-        groupId: { type: String, required: true } // Para armazenar de qual grupo é o aniversário
+        groupId: { type: String, required: true }
     });
 
-    // Adiciona um índice composto para garantir unicidade por nome e grupo
     birthdaySchema.index({ name: 1, groupId: 1 }, { unique: true });
 
     const Birthday = mongoose.model('Birthday', birthdaySchema);
 
-    // ----- Inicialização do Cliente WhatsApp com MongoStore -----
     const store = new MongoStore({ mongoose: mongoose });
 
     const client = new Client({
         authStrategy: new RemoteAuth({
-            clientId: 'datajambu-bot', // ID único para a sessão, importante para multi-device
+            clientId: 'datajambu-bot',
             store: store,
             backupSyncIntervalMs: 60000
         }),
@@ -43,16 +39,15 @@ mongoose.connect(process.env.MONGO_URI, {
                 '--disable-accelerated-2d-canvas',
                 '--no-first-run',
                 '--no-zygote',
-                '--single-process', // Importante para ambientes com recursos limitados como o Render free tier
+                '--single-process',
                 '--disable-gpu'
             ],
             headless: true
         }
     });
 
-    // ----- Eventos do Cliente WhatsApp -----
     client.on('qr', qr => {
-        console.log('QR RECEBIDO (ASCII - pode estar esticado)', qr);
+        console.log('QR RECEBIDO (ASCII)', qr);
         qrcode.generate(qr, { small: true });
 
         qrcodeLib.toDataURL(qr, (err, url) => {
@@ -66,23 +61,22 @@ mongoose.connect(process.env.MONGO_URI, {
 
     client.on('ready', () => {
         console.log('Cliente WhatsApp está pronto!');
-        console.log('Bot de Aniversários está online!');
+        console.log('DataJambu está online!');
     });
 
     client.on('message', async message => {
         const chat = await message.getChat();
-        const groupId = chat.isGroup ? chat.id._serialized : null; // Pega o ID do grupo
+        const groupId = chat.isGroup ? chat.id._serialized : null;
 
         // Ignora mensagens que não sejam de grupo ou que não comecem com '!'
         if (!chat.isGroup && message.body[0] !== '!') {
-            // Se não for grupo e não for um comando, pode ignorar ou responder algo genérico
             return;
         }
 
         const args = message.body.split(' ');
         const command = args[0].toLowerCase();
 
-        // Comando !add Nome DD/MM
+        // Comando !add [Nome] [DD/MM]
         if (command === '!add') {
             if (!groupId) {
                 message.reply('Este comando só pode ser usado em grupos.');
@@ -93,21 +87,21 @@ mongoose.connect(process.env.MONGO_URI, {
                 return;
             }
 
-            const datePart = args[args.length - 1]; // Última parte é a data
-            const name = args.slice(1, args.length - 1).join(' '); // O resto é o nome
+            const datePart = args[args.length - 1];
+            const name = args.slice(1, args.length - 1).join(' ');
 
             const dateParts = datePart.split('/');
             const day = parseInt(dateParts[0]);
             const month = parseInt(dateParts[1]);
 
             if (isNaN(day) || isNaN(month) || !isRealDate(day, month)) {
-                message.reply('Data inválida. Use o formato DD/MM.');
+                message.reply('Formato inválido. Use o formato DD/MM.');
                 return;
             }
 
             try {
                 const newBirthday = new Birthday({
-                    name: name.toLowerCase(), // Armazena em minúsculas para facilitar a busca
+                    name: name.toLowerCase(),
                     day,
                     month,
                     groupId
@@ -115,7 +109,7 @@ mongoose.connect(process.env.MONGO_URI, {
                 await newBirthday.save();
                 message.reply(`✨ Agora sei o aniversário de *${capitalizeName(name)}*!`);
             } catch (error) {
-                if (error.code === 11000) { // Erro de chave duplicada (nome e grupo)
+                if (error.code === 11000) { 
                     message.reply(`*${capitalizeName(name)}* já tem um aniversário registrado neste grupo.`);
                 } else {
                     console.error('Erro ao adicionar aniversário:', error);
@@ -183,31 +177,47 @@ mongoose.connect(process.env.MONGO_URI, {
             try {
                 const allBirthdays = await Birthday.find({ groupId });
                 const today = new Date();
-                const currentMonth = today.getMonth() + 1; // Mês atual (1-12)
-                const currentDay = today.getDate(); // Dia atual
+                const currentHour = today.getHours();
+                const cronHour = 8;
 
                 const upcomingBirthdays = [];
 
                 allBirthdays.forEach(bday => {
                     let year = today.getFullYear();
-                    // Se o aniversário já passou este ano, considera o próximo ano
-                    if (bday.month < currentMonth || (bday.month === currentMonth && bday.day < currentDay)) {
+                    let bdayDate = new Date(year, bday.month - 1, bday.day);
+                    bdayDate.setHours(0, 0, 0, 0);
+
+                    const isToday = (bdayDate.getDate() === today.getDate() &&
+                                     bdayDate.getMonth() === today.getMonth());
+
+                    let include = false;
+
+                    if (isToday) {
+                        if (currentHour < cronHour) {
+                            include = true;
+                        }
+                    } else if (bdayDate > today) {
+                        include = true;
+                    } else {
                         year++;
+                        bdayDate.setFullYear(year);
+                        include = true;
                     }
-                    const bdayDate = new Date(year, bday.month - 1, bday.day);
-                    upcomingBirthdays.push({
-                        name: bday.name,
-                        date: bdayDate,
-                        displayDate: `${bday.day.toString().padStart(2, '0')}/${bday.month.toString().padStart(2, '0')}`
-                    });
+
+                    if (include) {
+                        upcomingBirthdays.push({
+                            name: bday.name,
+                            date: bdayDate,
+                            displayDate: `${bday.day.toString().padStart(2, '0')}/${bday.month.toString().padStart(2, '0')}`
+                        });
+                    }
                 });
 
-                // Ordena os próximos aniversários por data
                 upcomingBirthdays.sort((a, b) => a.date.getTime() - b.date.getTime());
 
                 let replyMessage = '🎉 *Próximos aniversários:*\n\n';
                 if (upcomingBirthdays.length > 0) {
-                    const birthdaysToShow = upcomingBirthdays.slice(0, 3); // Mostra os 3 próximos
+                    const birthdaysToShow = upcomingBirthdays.slice(0, 3);
 
                     birthdaysToShow.forEach(bday => {
                         replyMessage += `*${capitalizeName(bday.name)}* - ${bday.displayDate}\n`;
@@ -248,13 +258,12 @@ mongoose.connect(process.env.MONGO_URI, {
         console.log('Cliente desconectado!', reason);
     });
 
-    // ----- Funções Auxiliares -----
+    // Funções
     function isRealDate(day, month) {
         if (day < 1 || month < 1 || month > 12) {
             return false;
         }
         const daysInMonth = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-        // Considera ano bissexto para fevereiro (apenas para validação do dia 29)
         if (month === 2) {
             return day <= daysInMonth[month - 1];
         }
@@ -265,23 +274,20 @@ mongoose.connect(process.env.MONGO_URI, {
         return name.split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
     }
 
-    // ----- Agendamento para verificar e anunciar aniversários (Cron Job) -----
-    // Roda todos os dias às 9:00 (no fuso horário do servidor, que o Render configura para UTC)
-    cron.schedule('0 9 * * *', async () => {
+    // Agendamento para verificar e anunciar aniversários
+    cron.schedule('0 8 * * *', async () => {
         console.log('Verificando aniversários...');
         const today = new Date();
-        const currentMonth = today.getMonth() + 1; // Mês atual (1-12)
-        const currentDay = today.getDate(); // Dia atual
+        const currentMonth = today.getMonth() + 1;
+        const currentDay = today.getDate();
 
         try {
-            // Encontra todos os aniversariantes de hoje em todos os grupos
             const birthdaysToday = await Birthday.find({
                 day: currentDay,
                 month: currentMonth
             });
 
             if (birthdaysToday.length > 0) {
-                // Agrupa os aniversariantes por grupo para enviar uma única mensagem por grupo
                 const birthdaysByGroup = {};
                 birthdaysToday.forEach(bday => {
                     if (!birthdaysByGroup[bday.groupId]) {
@@ -307,7 +313,7 @@ mongoose.connect(process.env.MONGO_URI, {
             console.error('Erro ao verificar aniversários agendados:', error);
         }
     }, {
-        timezone: "America/Belem" // Define o fuso horário para Belém
+        timezone: "America/Belem" 
     });
 
     const app = express();
@@ -320,11 +326,10 @@ mongoose.connect(process.env.MONGO_URI, {
     app.listen(port, '0.0.0.0', () => {
         console.log(`Servidor de health check iniciado na porta ${port}`);
     })
-
-    // Inicia o cliente WhatsApp
+    
     client.initialize();
 
 }).catch(err => {
     console.error('Erro ao conectar ao MongoDB:', err);
-    process.exit(1); // Sai do processo se a conexão com o DB falhar
+    process.exit(1);
 });
